@@ -1,0 +1,132 @@
+---
+title: "LADP"
+author: "Beichen Su"
+date: "December 31, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Introduction
+This dataset reflects calls for service incidents in the City of Los Angeles in the year 2014. This data is as accurate as the data in the database. And the link: https://data.lacity.org/A-Safe-City/LAPD-Calls-for-Service-2014/mgue-vbsx.
+
+The specification of the column names are given below:
+
+Incident Number: Unique event number assigned to Calls for Service by dispatch system.
+
+Reporting District: A four-digit code that represents a sub-area within a Geographic Area. All calls for service records reference the "RD" that it occurred in for statistical comparisons. Find LAPD Reporting Districts on the LA City GeoHub at http://geohub.lacity.org/datasets/c4f83909b81d4786aa8ba8
+
+Area Occurred: Area where the occurrence is reported to have been.
+
+Dispatch Date: MM/DD/YYYY
+
+Dispatch Time: In 24 hour military time.
+
+Call Type Code: A code to indicate the type of call that was made.
+
+Call Type Description: Defines the Call Type Code provided.
+
+The incident number can be dropped from the data frame as it's unique for each call.
+
+The call type code and the call type description can be the same column, so that I keep the code and drop the description. The description can be checked based on the code provided. Same relationship between Reporting District and Area occurred.
+
+
+```{r, include=FALSE}
+library(readr)
+library(ggplot2)
+df <- read_csv("LAPD.csv")
+#df$`Incident Number` <- NULL
+tb <- cbind(df$`Call Type Code`,df$`Call Type Description`)
+codeNdescrip <- unique(tb[,1:2])
+#df$`Call Type Description` <- NULL
+```
+
+
+# 2. Exploratory analysis
+
+## 2.1 Area occurred
+
+```{r}
+qplot(df$`Area Occurred`, xlab = "Area",main = "Area vs count")+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+Area <- as.data.frame(table(df$`Area Occurred`))
+# Max call area
+Area$Var1[which(Area$Freq == max(Area$Freq))]
+# Min call area
+Area$Var1[which(Area$Freq == min(Area$Freq))]
+# Average call count among all area
+mean(Area$Freq)
+```
+
+## 2.2 Type of call
+As there more than 100 kind of call code, the investigation will focus on the top 20 codes.
+```{r, include=FALSE}
+codes <- as.data.frame(table(df$`Call Type Code`))
+codes <- codes[order(codes$Freq, decreasing = TRUE),]
+codes <- codes[1:20,]
+codes$Var1 <- as.character(codes$Var1)
+names <- codes$Var1
+temp <- df$`Call Type Code`[which(df$`Call Type Code` %in% names)]
+```
+```{r,echo=FALSE}
+qplot(temp, xlab = "code")+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+## 2.3 Call Time
+
+The record of date shows that the report were sent uniformly through the year, and a peak at mid July.
+```{r, message=FALSE}
+date <- as.Date(df$`Dispatch Date`, format = "%m/%d/%Y")
+qplot(date)
+```
+
+For the time:
+```{r, message=FALSE}
+time <- as.difftime(df$`Dispatch Time`)
+qplot(time)
+```
+
+Most of the report were sent at night. Extremely low call has been received in the morning.
+
+
+# 3. Model
+For all the columns in the dataset, there 3 attributes worth digging: Reporting district, Call type, Date and time. It might be possible to predict the kind of call based on the date, time and district. I will give it a try.
+
+```{r, include=FALSE}
+district <- as.character(df$`Reporting District`)
+type <- as.character(df$`Call Type Code`)
+data <- cbind(district,date,time,type)
+data <- as.data.frame(data, stringsAsFactors = FALSE)
+library(h2o)
+h2o.init(nthreads = -1)
+```
+
+There are more than 900k records in the dataset. I chose 5% of them for the computation capacity on this EC2 machine.
+
+```{r, eval=FALSE}
+hx <- as.h2o(data)
+sp <- h2o.splitFrame(hx,ratios = 0.95)
+hx <- sp[[2]]
+hx[,1] <- h2o.asfactor(hx[,1])
+hx[,2] <- h2o.asfactor(hx[,2])
+hx[,3] <- h2o.asfactor(hx[,3])
+hx[,4] <- h2o.asfactor(hx[,4])
+sp <- h2o.splitFrame(hx,seed = 123)
+hx_train <- sp[[1]]
+hx_test <- sp[[2]]
+cols <- colnames(data)
+md <- h2o.randomForest(cols[1:3], cols[4],hx_train, model_id = "First RF", nfolds = 5)
+save(md, file = "md.rda")
+```
+
+```{r}
+load("md.rda")
+md@model$cross_validation_metrics
+md@model$cross_validation_metrics_summary
+```
+
+
+This turns out the prediction on the call type doesn't really rely on district, date and time. The reason could be that the real reason of the call type is not included in the data, or the training data set should be larger, but I prefer the first reason.
+
